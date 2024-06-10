@@ -1,7 +1,8 @@
-//! Logic for building plonky2 circuits.
+//! Logic for building plonky2 circuitsquare.
 
 #[cfg(not(feature = "std"))]
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use plonky2_maybe_rayon::rayon::vec;
 use core::cmp::max;
 #[cfg(feature = "std")]
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
@@ -102,7 +103,7 @@ pub struct LookupWire {
 /// type C = PoseidonGoldilocksConfig;
 /// type F = <C as GenericConfig<D>>::F;
 ///
-/// let config = CircuitConfig::standard_recursion_config();
+/// let config = CircuitConfig:();
 /// let mut builder = CircuitBuilder::<F, D>::new(config);
 ///
 /// // Build a circuit for the statement: "I know the 100th term
@@ -198,6 +199,8 @@ pub struct CircuitBuilder<F: RichField + Extendable<D>, const D: usize> {
     /// Optional verifier data that is registered as public inputs.
     /// This is used in cyclic recursion to hold the circuit's own verifier key.
     pub(crate) verifier_data_public_input: Option<VerifierCircuitTarget>,
+    pub original_vector: Vec<F>,
+    pub sorted_vector: Vec<F>,
 }
 
 impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
@@ -227,6 +230,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             luts: Vec::new(),
             goal_common_data: None,
             verifier_data_public_input: None,
+            original_vector: vec![],
+            sorted_vector: vec![],
         };
         builder.check_config();
         builder
@@ -998,12 +1003,44 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         }
 
         forest.compress_paths();
-
+        
         let wire_partition = forest.wire_partition();
         (
             wire_partition.get_sigma_polys(degree_log, k_is, subgroup),
             forest,
         )
+
+    }
+
+    fn sigma_vecs_permute(&self, k_is: &[F], subgroup: &[F]) -> (Vec<PolynomialValues<F>>, Forest) {
+        println!("sigma_vecs_permute");
+        let degree = 2;
+        let degree_log = log2_strict(degree);
+        let config = &self.config;
+        let mut forest = Forest::new(
+            config.num_wires,
+            config.num_routed_wires,
+            degree,
+            self.virtual_target_index,
+        );
+
+        for gate in 0..degree {
+            for input in 0..config.num_wires {
+                forest.add(Target::Wire(Wire {
+                    row: gate,
+                    column: input,
+                }));
+            }
+        }
+        
+        forest.compress_paths();
+        
+        let wire_partition = forest.wire_partition();
+        (
+            wire_partition.get_sigma_polys_vec(&self.original_vector, &self.sorted_vector, degree_log, k_is, subgroup),
+            forest,
+        )
+
     }
 
     pub fn print_gate_counts(&self, min_delta: usize) {
@@ -1061,6 +1098,7 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         let cap_height = self.config.fri_config.cap_height;
         // Total number of LUTs.
         let num_luts = self.get_luts_length();
+
         // Hash the public inputs, and route them to a `PublicInputGate` which will enforce that
         // those hash wires match the claimed public inputs.
         let num_public_inputs = self.public_inputs.len();
@@ -1113,7 +1151,12 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             self.gate_instances.len()
         );
         self.blind_and_pad();
-        let degree = self.gate_instances.len();
+        if self.original_vector.len() > 0 {
+            let gate_ref = GateRef::new(PublicInputGate);
+            self.gates.insert(gate_ref.clone());
+            self.gates.insert(gate_ref.clone());
+        }
+        let mut degree = self.gate_instances.len();
         debug!("Degree after blinding & padding: {}", degree);
         let degree_bits = log2_strict(degree);
         let fri_params = self.fri_params(degree_bits);
@@ -1142,20 +1185,34 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             0
         };
 
+        println!("constant_vecs.len(): {}", constant_vecs.len());
         constant_vecs.extend(self.constant_polys());
+        println!("constant_vecs.len(): {}", constant_vecs.len());
         let num_constants = constant_vecs.len();
-
         let subgroup = F::two_adic_subgroup(degree_bits);
 
         let k_is = get_unique_coset_shifts(degree, self.config.num_routed_wires);
-        let (sigma_vecs, forest) = timed!(
+        
+        let (mut sigma_vecs, mut forest) = timed!(
             timing,
             "generate sigma polynomials",
             self.sigma_vecs(&k_is, &subgroup)
         );
 
+        if self.original_vector.len() > 0 {
+            print!("Original vector");
+            (sigma_vecs, forest) = timed!(
+                timing,
+                "generate sigma polynomials",
+                self.sigma_vecs_permute(&k_is, &subgroup)
+            );
+        }
+
         // Precompute FFT roots.
+
         let max_fft_points = 1 << (degree_bits + max(rate_bits, log2_ceil(quotient_degree_factor)));
+        println!("Max FFT points: {}, degree_bits: {}, rate_bits: {}, quotient_degree_factor: {}", max_fft_points, degree_bits, rate_bits, quotient_degree_factor);
+
         let fft_root_table = fft_root_table(max_fft_points);
 
         let constants_sigmas_commitment = if commit_to_sigma {
@@ -1242,6 +1299,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
         ];
         let circuit_digest = C::Hasher::hash_no_pad(&circuit_digest_parts.concat());
 
+        println!("circuit_digest: {:?}", circuit_digest);
+        print!("num_public_inputs: {}", num_public_inputs);
         let common = CommonCircuitData {
             config: self.config,
             fri_params,
@@ -1266,7 +1325,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
                 success = false;
             }
         }
-
+        println!("Success: {}", success);
+        
         let prover_only = ProverOnlyCircuitData::<F, C, D> {
             generators: self.generators,
             generator_indices_by_watches,
@@ -1280,6 +1340,8 @@ impl<F: RichField + Extendable<D>, const D: usize> CircuitBuilder<F, D> {
             lookup_rows: self.lookup_rows.clone(),
             lut_to_lookups: self.lut_to_lookups.clone(),
         };
+        println!("lookup_rows size: {}", self.lookup_rows.len());
+        //println!("sigmas size: {}", sigma_vecs.len());
 
         let verifier_only = VerifierOnlyCircuitData::<C, D> {
             constants_sigmas_cap,

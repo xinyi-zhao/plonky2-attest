@@ -84,6 +84,7 @@ pub struct CircuitConfig {
     /// systematically, but will never exceed this value.
     pub max_quotient_degree_factor: usize,
     pub fri_config: FriConfig,
+    pub only_permute: bool, 
 }
 
 impl Default for CircuitConfig {
@@ -115,6 +116,28 @@ impl CircuitConfig {
                 reduction_strategy: FriReductionStrategy::ConstantArityBits(4, 5),
                 num_query_rounds: 28,
             },
+            only_permute : false,
+        }
+    }
+
+    pub const fn standard_permutation_config() -> Self {
+        Self {
+            num_wires: 101,
+            num_routed_wires: 101,
+            num_constants: 2,
+            use_base_arithmetic_gate: false,
+            security_bits: 100,
+            num_challenges: 2,
+            zero_knowledge: false,
+            max_quotient_degree_factor: 8,
+            fri_config: FriConfig {
+                rate_bits: 3,
+                cap_height: 4,
+                proof_of_work_bits: 16,
+                reduction_strategy: FriReductionStrategy::ConstantArityBits(4, 5),
+                num_query_rounds: 28,
+            },
+            only_permute : true,
         }
     }
 

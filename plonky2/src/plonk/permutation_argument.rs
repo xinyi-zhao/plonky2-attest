@@ -131,6 +131,7 @@ impl WirePartition {
             .collect()
     }
 
+
     /// Generates sigma in the context of Plonk, which is a map from `[kn]` to `[kn]`, where `k` is
     /// the number of routed wires and `n` is the number of gates.
     fn get_sigma_map(&self, degree: usize, num_routed_wires: usize) -> Vec<usize> {
@@ -152,6 +153,57 @@ impl WirePartition {
                 let neighbor = neighbors[&wire];
                 sigma.push(neighbor.column * degree + neighbor.row);
             }
+        }
+        sigma
+    }
+
+    pub(crate) fn get_sigma_polys_vec<F: Field>(
+        &self,
+        original_vector: &Vec<F>, 
+        sorted_vector: &Vec<F>,
+        degree_log: usize,
+        k_is: &[F],
+        subgroup: &[F],
+    ) -> Vec<PolynomialValues<F>> {
+        let degree = 1 << degree_log;
+        let sigma = self.get_sigma_map_vec(original_vector, sorted_vector);
+
+        sigma
+            .chunks(degree)
+            .map(|chunk| {
+                let values = chunk
+                    .par_iter()
+                    .map(|&x| k_is[x / degree] * subgroup[x % degree])
+                    .collect::<Vec<_>>();
+                PolynomialValues::new(values)
+            })
+            .collect()
+    }
+
+    fn get_sigma_map_vec<F: Field>(&self, original_vector: &Vec<F>, sorted_vector: &Vec<F>) -> Vec<usize> {
+        let mut neighbors = HashMap::with_capacity(self.partition.len());
+        let mut sigma = Vec::with_capacity(self.partition.len());
+        //get a 1-1 map from original_vector to sorted_vector, the vectors may contain some duplicate elements
+        
+        let mut added_index = Vec::new();
+
+        for i in 0..original_vector.len() {
+            let index = sorted_vector.iter()
+    .position(|&x| x == original_vector[i] && !added_index.contains(&sorted_vector.iter().position(|&y| y == x).unwrap()))
+    .unwrap();
+            neighbors.insert(i, index + 101);
+            neighbors.insert(index + 101, i);
+            added_index.push(index);
+        }
+        for i in original_vector.len()..101 {
+            neighbors.insert(i, i + 101);
+            neighbors.insert(i + 101, i);
+        }
+        for i in 0..self.partition.len() {
+            sigma.push(neighbors[&i]);
+        }
+        for i in 0..202{
+            println!("sigma[{}] = {}", i, sigma[i]);
         }
         sigma
     }

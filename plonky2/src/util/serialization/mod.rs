@@ -662,6 +662,7 @@ pub trait Read {
         let use_base_arithmetic_gate = self.read_bool()?;
         let zero_knowledge = self.read_bool()?;
         let fri_config = self.read_fri_config()?;
+        let only_permute = self.read_bool()?;
 
         Ok(CircuitConfig {
             num_wires,
@@ -673,6 +674,7 @@ pub trait Read {
             use_base_arithmetic_gate,
             zero_knowledge,
             fri_config,
+            only_permute
         })
     }
 
@@ -1697,6 +1699,7 @@ pub trait Write {
             use_base_arithmetic_gate,
             zero_knowledge,
             fri_config,
+            only_permute,
         } = config;
 
         self.write_usize(*num_wires)?;
